@@ -1,0 +1,350 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "AWS CloudFormation template for ingesting Mux Data view logs into New Relic using Kinesis Firehose",
+  "Mappings": {
+    "NewRelicLogsEndpoints": {
+      "US": {
+        "Url": "https://aws-api.newrelic.com/firehose/v1"
+      },
+      "EU": {
+        "Url": "https://aws-api.eu01.nr-data.net/firehose/v1"
+      }
+    }
+  },
+  "Parameters": {
+    "MuxExternalId": {
+      "Type": "String",
+      "Description": "The external id provided when configuring a Streaming Export from the Mux Dashboard in Settings > Streaming Exports",
+      "Default": ""
+    },
+    "NewRelicLogsEndpoint": {
+      "Type": "String",
+      "Description": "The datacenter endpoint where logs will be sent",
+      "Default": "US",
+      "AllowedValues": [
+        "US",
+        "EU"
+      ]
+    },
+    "NewRelicAPIKey": {
+      "Type": "String",
+      "Description": "An ingest license API key from New Relic",
+      "NoEcho": "true"
+    }
+  },
+  "Resources": {
+    "ErrorBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "AccessControl": "Private",
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "BucketName": {
+          "Fn::Join": [
+            "-",
+            [
+              "mux-views-newrelic-logs-errors",
+              {
+                "Ref": "AWS::AccountId"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "MuxDataViewStreamPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Description": "Allows Mux's external AWS account access to your Kinesis stream in order to write view data",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "kinesis:ListShards",
+                "kinesis:PutRecord",
+                "kinesis:PutRecords"
+              ],
+              "Resource": {
+                "Fn::GetAtt": [
+                  "MuxDataViewStream",
+                  "Arn"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "MuxDataViewStreamRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Join": [
+            "-",
+            [
+              "mux-view-stream-access-role",
+              {
+                "Ref": "AWS::StackName"
+              }
+            ]
+          ]
+        },
+        "Description": "Provides role access from Mux's AWS account",
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "sts:AssumeRole",
+              "Principal": {
+                "AWS": "910609115197"
+              },
+              "Condition": {
+                "StringEquals": {
+                  "sts:ExternalId": {
+                    "Ref": "MuxExternalId"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          {
+            "Ref": "MuxDataViewStreamPolicy"
+          }
+        ]
+      }
+    },
+    "MuxDataViewStream": {
+      "Type": "AWS::Kinesis::Stream",
+      "Properties": {
+        "Name": {
+          "Fn::Join": [
+            "-",
+            [
+              "mux-view-stream",
+              {
+                "Ref": "AWS::StackName"
+              }
+            ]
+          ]
+        },
+        "RetentionPeriodHours": 24,
+        "ShardCount": 1,
+        "StreamModeDetails": {
+          "StreamMode": "PROVISIONED"
+        }
+      }
+    },
+    "DeliveryStreamLogsRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Join": [
+            "-",
+            [
+              "mux-data-view-newrelic-role",
+              {
+                "Ref": "AWS::StackName"
+              }
+            ]
+          ]
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "firehose.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          {
+            "Ref": "DeliveryStreamLogsPolicy"
+          }
+        ]
+      }
+    },
+    "DeliveryStreamLogsPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:AbortMultipartUpload",
+                "s3:GetBucketLocation",
+                "s3:GetObject",
+                "s3:ListBucket",
+                "s3:ListBucketMultipartUploads",
+                "s3:PutObject"
+              ],
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "ErrorBucket",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "/",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "ErrorBucket",
+                          "Arn"
+                        ]
+                      },
+                      "*"
+                    ]
+                  ]
+                }
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "kinesis:DescribeStream",
+                "kinesis:GetShardIterator",
+                "kinesis:GetRecords"
+              ],
+              "Resource": {
+                "Fn::GetAtt": [
+                  "MuxDataViewStream",
+                  "Arn"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "NewRelicDeliveryStream": {
+      "Type": "AWS::KinesisFirehose::DeliveryStream",
+      "DependsOn": [
+        "ErrorBucket"
+      ],
+      "Properties": {
+        "DeliveryStreamName": {
+          "Fn::Join": [
+            "-",
+            [
+              "mux-view-newrelic-delivery",
+              {
+                "Ref": "AWS::StackName"
+              }
+            ]
+          ]
+        },
+        "DeliveryStreamType": "KinesisStreamAsSource",
+        "HttpEndpointDestinationConfiguration": {
+          "RoleARN": {
+            "Fn::GetAtt": [
+              "DeliveryStreamLogsRole",
+              "Arn"
+            ]
+          },
+          "EndpointConfiguration": {
+            "Url": {
+              "Fn::FindInMap": [
+                "NewRelicLogsEndpoints",
+                {
+                  "Ref": "NewRelicLogsEndpoint"
+                },
+                "Url"
+              ]
+            },
+            "AccessKey": {
+              "Ref": "NewRelicAPIKey"
+            },
+            "Name": "New Relic"
+          },
+          "RequestConfiguration": {
+            "ContentEncoding": "GZIP"
+          },
+          "BufferingHints": {
+            "IntervalInSeconds": 60,
+            "SizeInMBs": 1
+          },
+          "CloudWatchLoggingOptions": {
+            "Enabled": "false"
+          },
+          "RetryOptions": {
+            "DurationInSeconds": 60
+          },
+          "S3BackupMode": "FailedDataOnly",
+          "S3Configuration": {
+            "BucketARN": {
+              "Fn::GetAtt": [
+                "ErrorBucket",
+                "Arn"
+              ]
+            },
+            "CompressionFormat": "UNCOMPRESSED",
+            "Prefix": "",
+            "RoleARN": {
+              "Fn::GetAtt": [
+                "DeliveryStreamLogsRole",
+                "Arn"
+              ]
+            }
+          }
+        },
+        "KinesisStreamSourceConfiguration": {
+          "KinesisStreamARN": {
+            "Fn::GetAtt": [
+              "MuxDataViewStream",
+              "Arn"
+            ]
+          },
+          "RoleARN": {
+            "Fn::GetAtt": [
+              "DeliveryStreamLogsRole",
+              "Arn"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "MuxDataViewStreamArn": {
+      "Description": "Kinesis Data Stream ARN for the Mux Streaming Export configuration",
+      "Value": {
+        "Fn::GetAtt": [
+          "MuxDataViewStream",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": "mux-view-stream-arn"
+      }
+    },
+    "MuxDataViewStreamRoleArn": {
+      "Description": "IAM Role ARN for the Mux Streaming Export configuration",
+      "Value": {
+        "Fn::GetAtt": [
+          "MuxDataViewStreamRole",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": "mux-view-stream-role-arn"
+      }
+    }
+  }
+}

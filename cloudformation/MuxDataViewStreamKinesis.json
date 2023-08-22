@@ -1,0 +1,126 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "AWS CloudFormation template for ingesting Mux Data view logs into New Relic using Kinesis Firehose",
+  "Parameters": {
+    "MuxExternalId": {
+      "Type": "String",
+      "Description": "The external id provided when configuring a Streaming Export from the Mux Dashboard in Settings > Streaming Exports",
+      "Default": ""
+    }
+  },
+  "Resources": {
+    "MuxDataViewStreamPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "Description": "Allows Mux's external AWS account access to your Kinesis stream in order to write view data",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "kinesis:ListShards",
+                "kinesis:PutRecord",
+                "kinesis:PutRecords"
+              ],
+              "Resource": {
+                "Fn::GetAtt": [
+                  "MuxDataViewStream",
+                  "Arn"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "MuxDataViewStreamRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Join": [
+            "-",
+            [
+              "mux-view-stream-access-role",
+              {
+                "Ref": "AWS::StackName"
+              }
+            ]
+          ]
+        },
+        "Description": "Provides role access from Mux's AWS account",
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "sts:AssumeRole",
+              "Principal": {
+                "AWS": "910609115197"
+              },
+              "Condition": {
+                "StringEquals": {
+                  "sts:ExternalId": {
+                    "Ref": "MuxExternalId"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          {
+            "Ref": "MuxDataViewStreamPolicy"
+          }
+        ]
+      }
+    },
+    "MuxDataViewStream": {
+      "Type": "AWS::Kinesis::Stream",
+      "Properties": {
+        "Name": {
+          "Fn::Join": [
+            "-",
+            [
+              "mux-view-stream",
+              {
+                "Ref": "AWS::StackName"
+              }
+            ]
+          ]
+        },
+        "RetentionPeriodHours": 24,
+        "ShardCount": 1,
+        "StreamModeDetails": {
+          "StreamMode": "PROVISIONED"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "MuxDataViewStreamArn": {
+      "Description": "Kinesis Data Stream ARN for the Mux Streaming Export configuration",
+      "Value": {
+        "Fn::GetAtt": [
+          "MuxDataViewStream",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": "mux-data-view-stream-arn"
+      }
+    },
+    "MuxDataViewStreamRoleArn": {
+      "Description": "IAM Role ARN for the Mux Streaming Export configuration",
+      "Value": {
+        "Fn::GetAtt": [
+          "MuxDataViewStreamRole",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": "mux-data-view-stream-role-arn"
+      }
+    }
+  }
+}
